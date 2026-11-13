@@ -1,33 +1,94 @@
+# Sobe a plataforma INTEIRA com um comando:   docker compose up --build
+# Os serviços se falam pelo NOME (redis, inferencia, vetorial...), nunca por IP.
+
+x-otel: &otel
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+  OTEL_CONSOLE: ${OTEL_CONSOLE:-false}
+
 services:
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
+      timeout: 3s
       retries: 5
+
+  jaeger:                      # UI de rastreamento: http://localhost:16686
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports: ["16686:16686"]
+
+  vetorial:
+    build: ./vetorial
+    environment:
+      <<: *otel
+      VETORIAL_TTL_S: ${VETORIAL_TTL_S:-86400}
+      VETORIAL_ARQUIVO: /dados/vetores.json
+    volumes: ["vetorial_dados:/dados"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8002/saude')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   inferencia:
     build: ./inferencia
     environment:
-      - REDIS_URL=redis://redis:6379/0
+      <<: *otel
+      REDIS_URL: redis://redis:6379/0
+      RESULTADO_TTL_S: ${RESULTADO_TTL_S:-3600}
     depends_on:
       redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8001/saude')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
-  worker:
+  worker:                      # escale com: docker compose up --scale worker=3
     build: ./worker
     environment:
-      - REDIS_URL=redis://redis:6379/0
+      <<: *otel
+      REDIS_URL: redis://redis:6379/0
+      URL_VETORIAL: http://vetorial:8002
+      RESULTADO_TTL_S: ${RESULTADO_TTL_S:-3600}
+      DLQ_TTL_S: ${DLQ_TTL_S:-86400}
+      MAX_TENTATIVAS: ${MAX_TENTATIVAS:-3}
     depends_on:
       redis: {condition: service_healthy}
+      vetorial: {condition: service_started}
 
   gateway:
     build: ./gateway
     ports: ["8000:8000"]
     environment:
-      - URL_INFERENCIA=http://inferencia:8001
-      - JWT_SEGREDO=${JWT_SEGREDO:-troque-este-segredo}
-    depends_on: [inferencia]
+      <<: *otel
+      URL_INFERENCIA: http://inferencia:8001
+      URL_VETORIAL: http://vetorial:8002
+      JWT_SEGREDO: ${JWT_SEGREDO:-troque-este-segredo}
+      JWT_EXPIRA_MINUTOS: ${JWT_EXPIRA_MINUTOS:-30}
+      USUARIOS: ${USUARIOS:-demo:demo123}
+      RATE_LIMIT_POR_MINUTO: ${RATE_LIMIT_POR_MINUTO:-30}
+      RATE_LIMIT_LOGIN: ${RATE_LIMIT_LOGIN:-10}
+      CONFIAR_PROXY: ${CONFIAR_PROXY:-false}
+      TIMEOUT_CONEXAO_S: ${TIMEOUT_CONEXAO_S:-1.5}
+      TIMEOUT_LEITURA_S: ${TIMEOUT_LEITURA_S:-5}
+      RETRY_TENTATIVAS: ${RETRY_TENTATIVAS:-3}
+      RETRY_ESPERA_BASE_S: ${RETRY_ESPERA_BASE_S:-0.3}
+      CB_FALHAS_LIMITE: ${CB_FALHAS_LIMITE:-5}
+      CB_RESET_S: ${CB_RESET_S:-15}
+    depends_on:
+      inferencia: {condition: service_healthy}
+      vetorial: {condition: service_healthy}
 
-# Observe: os servicos se referenciam pelo NOME (inferencia, redis),
-# nunca por IP fixo. Isso e descoberta de servicos. (Aula 14)
+  # gRPC do C1.A2 (opcional):  docker compose --profile grpc up --build
+  inferencia-grpc:
+    build: ./inferencia
+    command: ["python", "-m", "app.servidor_grpc"]
+    profiles: ["grpc"]
+    ports: ["50051:50051"]
+
+volumes:
+  vetorial_dados:

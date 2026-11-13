@@ -1,0 +1,5 @@
+# Para rodar os testes e scripts localmente: pip install -r requirements-dev.txt
+-r gateway/requirements.txt
+numpy==2.1.1
+pytest==8.3.3
+httpx==0.27.2
