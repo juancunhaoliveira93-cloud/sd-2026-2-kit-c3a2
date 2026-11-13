@@ -1,118 +1,136 @@
-# Kit de Partida — C3.A2: Plataforma de IA como Serviço (projeto integrador)
+# Plataforma de IA como Serviço — C3.A2
 
 **Sistemas Distribuídos e Computação em Nuvem · FAESA · 2026/2**
-Prof. Howard Cruz Roatti · Lançado na Aula 13 (05/11) · Entrega na Aula 17 (26/11)
+**Integrantes:** Carine, Gustavo, Juan, Lucas e Victor.
 
----
+Plataforma cloud-native de inferência de IA (análise de sentimento): microsserviços **conteinerizados**,
+**publicados** na nuvem com HTTPS, **observáveis** (rastreamento distribuído) e **protegidos** (JWT, rate limit, LGPD).
 
-## O que é isto
+> **URL pública:** `https://<PREENCHER-APOS-O-DEPLOY>` — veja [deploy/INSTRUCOES.md](deploy/INSTRUCOES.md)
 
-O projeto que fecha o semestre. Você pega tudo o que construiu e transforma numa
-plataforma de verdade: **conteinerizada, publicada na internet, observável e protegida**.
-Ao final você terá um sistema distribuído completo e público — material de portfólio
-para entrevista de emprego.
+## Arquitetura
 
-> **Sobre a IA neste trabalho:** todo contato com inteligência artificial aqui é
-> **chamada de biblioteca ou de API**. Você **não vai treinar modelos** nem precisar de
-> matemática de aprendizado de máquina. O modelo já vem pronto e configurado.
-> A sua nota vem da **engenharia distribuída**: arquitetura, comunicação, resiliência e
-> execução reproduzível — a sofisticação do modelo **não pontua**.
+```
+                       ┌────────────── rede interna do Docker ──────────────┐
+cliente ──HTTPS──▶ Caddy ─▶ GATEWAY ──HTTP──▶ INFERÊNCIA ──┐                 │
+ (JWT)              :443     :8000   │          (API + gRPC)  │ enfileira      │
+                              │      │                        ▼                │
+                              │      └──HTTP──▶ VETORIAL ◀── REDIS (fila) ─▶ WORKER(s)
+                              │                (busca por     tarefas            │ │
+                              └──────────────▶  similaridade)  resultados/DLQ    │ │
+                                                                 ▲───indexa─────┘ │
+                          Jaeger ◀── spans OpenTelemetry de todos os serviços ───┘
+```
 
----
+| Serviço | Pasta | Função |
+|---|---|---|
+| **Gateway** | `gateway/` | Única porta de entrada: JWT, rate limit, roteamento, resiliência (timeout, retentativa, circuit breaker) |
+| **Inferência** | `inferencia/` | API REST (+ gRPC) do C1.A2; carrega o modelo uma vez e enfileira tarefas (202) |
+| **Worker** | `worker/` | Consome a fila Redis, executa o modelo, grava resultado; retentativa e dead-letter |
+| **Armazenamento vetorial** | `vetorial/` | Guarda vetores (não o texto) e busca por similaridade |
+| Redis | — | Fila de tarefas, resultados (com TTL) e DLQ |
+| Jaeger | — | Visualização dos traces |
 
-## Como começar
+**Comunicação:** REST (cliente→gateway→serviços), mensageria via fila Redis (inferência→worker), gRPC opcional no C1.A2.
+
+## Como executar do zero (um comando)
+
+Pré-requisitos: Docker + Docker Compose.
 
 ```bash
-# 1. Clone o kit e entre na pasta
-git clone https://github.com/howardroatti/sd-2026-2-kit-c3a2.git
+git clone https://github.com/juancunhaoliveira93-cloud/sd-2026-2-kit-c3a2.git
 cd sd-2026-2-kit-c3a2
-
-# 2. Crie e ative o ambiente virtual
-python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# Linux/macOS:
-source .venv/bin/activate
-
-# 3. Instale as dependências
-pip install -r requirements.txt
+cp .env.example .env          # opcional: já existem valores padrão
+docker compose up --build     # UM comando sobe tudo
 ```
+
+Em outro terminal:
 
 ```bash
-# 4. Copie o arquivo de ambiente
-cp .env.example .env
+# 1) Login (usuário demo / senha demo123 por padrão)
+TOKEN=$(curl -s -X POST http://localhost:8000/login -H "Content-Type: application/json" \
+  -d '{"usuario":"demo","senha":"demo123"}' | python -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
 
-# 5. Suba a stack inteira com UM comando
-docker compose up --build
+# 2) Enviar uma análise (retorna 202 e um id)
+curl -X POST http://localhost:8000/predict -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"texto":"o atendimento foi excelente"}'
 
-# 6. Teste pelo gateway (nunca pelos serviços diretamente)
-curl http://localhost:8000/saude
-curl -X POST http://localhost:8000/predict \
-  -H "Content-Type: application/json" -d '{"texto":"servico excelente"}'
+# 3) Consultar o resultado
+curl http://localhost:8000/resultado/<ID> -H "Authorization: Bearer $TOKEN"
 
-# 7. Publique na nuvem seguindo deploy/INSTRUCOES.md
+# 4) Buscar textos parecidos
+curl -X POST http://localhost:8000/similares -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"texto":"atendimento excelente","k":3}'
 ```
 
----
+Teste automático ponta a ponta: `pip install requests && python scripts/smoke_test.py`
+Traces: http://localhost:16686 · Mais workers: `docker compose up --build --scale worker=3`
+gRPC do C1.A2 (opcional): `docker compose --profile grpc up --build`
 
-## Estrutura do projeto
+### Rotas do gateway
+
+| Rota | Auth | Descrição |
+|---|---|---|
+| `GET /saude` | não | Estado do gateway e dos circuitos |
+| `POST /login` | não (limite por IP) | Emite o JWT |
+| `POST /predict` | JWT | Enfileira a análise → `202 {id}` |
+| `GET /resultado/{id}` | JWT | Resultado (`na_fila` → `processando` → `pronto`/`erro`) |
+| `POST /predict-sync` | JWT | Inferência síncrona (comparação de latência) |
+| `POST /similares` | JWT | Busca no armazenamento vetorial |
+
+Sem token → `401`. Excesso de requisições → `429` + `Retry-After`. Serviço interno fora do ar → `503`.
+
+## Resiliência
+- **Tempo-limite:** 1,5 s (conexão) e 5 s (leitura) em toda chamada interna.
+- **Retentativa:** até 3 tentativas com espera progressiva (0,3 s, 0,6 s) + jitter.
+- **Circuit breaker:** após 5 falhas seguidas o circuito abre (falha em ~2 ms com `Retry-After`), passa a meio-aberto após 15 s e deixa uma chamada de teste.
+- **Worker:** 3 tentativas (1 s, 2 s, 4 s) e depois **dead-letter**; se o vetorial cair, a tarefa continua (degradação graciosa).
+- Documentação: [docs/OBSERVABILIDADE.md](docs/OBSERVABILIDADE.md) · [docs/TRADEOFFS.md](docs/TRADEOFFS.md)
+
+## Segurança e conformidade (LGPD)
+
+| Dado | Finalidade | Retenção |
+|---|---|---|
+| Texto enviado (pode conter dado pessoal) | Executar a inferência e devolver ao solicitante | Resultado expira em **1 h**; DLQ em **24 h** |
+| Vetor + id + sentimento (sem o texto) | Busca por similaridade | **24 h** |
+| Usuário (login) | Autenticação e limite por cliente | Token válido por **30 min** |
+| IP | Limitar tentativas de login | **60 s**, só em memória |
+| Logs e traces | Operação | Sem texto, token ou senha; somente rota, status e tempo |
+
+Detalhes e limitações: [docs/LGPD.md](docs/LGPD.md). Segurança: JWT (HS256) com expiração, HTTPS via Caddy,
+rate limit, serviços internos sem porta pública, toda configuração em variáveis de ambiente (`.env.example`).
+
+## Testes
+
+```bash
+pip install -r requirements-dev.txt
+(cd gateway && python -m pytest -q tests)
+(cd vetorial && python -m pytest -q tests)
+```
+
+## Estrutura
 
 ```
-sd-2026-2-kit-c3a2/
-├── gateway/
-│   ├── app.py              # TAREFAS 1 e 2 (JWT e rate limit)
-│   └── Dockerfile          # PRONTO - use de modelo
-├── inferencia/             # traga o seu C1.A2 para cá
-├── worker/                 # traga o seu worker para cá
-├── deploy/INSTRUCOES.md    # passo a passo do free tier
-├── Dockerfile.exemplo      # modelo para os demais serviços
-├── docker-compose.yml      # TAREFA 4
-└── TAREFAS.md              # <- comece por aqui
+gateway/      app.py auth.py ratelimit.py resiliencia.py telemetria.py Dockerfile tests/
+inferencia/   app/ (api_rest, fila, modelo, servidor_grpc, telemetria) proto/ Dockerfile
+worker/       app/ (worker, fila, modelo, telemetria) Dockerfile
+vetorial/     main.py telemetria.py Dockerfile tests/
+deploy/       INSTRUCOES.md Caddyfile
+docs/         LGPD.md OBSERVABILIDADE.md TRADEOFFS.md
+scripts/      smoke_test.py medir_latencia.py
+docker-compose.yml  docker-compose.prod.yml  .github/workflows/ci.yml
 ```
 
----
+## Origem do código
+O serviço de inferência e o worker partem do projeto **C1.A2**
+([sd-2026-2-kit-c1a2](https://github.com/juancunhaoliveira93-cloud/sd-2026-2-kit-c1a2)), adaptado para a plataforma.
 
-## O que você precisa fazer
+## Divisão do trabalho
 
-Abra o arquivo **`TAREFAS.md`**: ele lista o núcleo obrigatório item a item, indicando
-o arquivo e a aula de referência de cada um.
-
----
-
-## Como você será avaliado
-
-| Critério | Pontos |
+| Integrante | Entrega |
 |---|---|
-| Arquitetura e decomposição em serviços | 1,5 |
-| Comunicação funcionando (REST / gRPC / mensageria) | 1,5 |
-| Resiliência e tratamento de falhas | 1,0 |
-| Execução reproduzível (README, container, deploy) | 1,0 |
-| **Sofisticação do modelo de IA** | **não pontua** |
-| **Total** | **5,0** |
-
-**Entrega:** no seu repositório do GitHub, **sem apresentação oral**. Grupos livres.
-
----
-
-## Aulas de referência
-
-- **Aula 13** — Nuvem, containers e o primeiro deploy
-- **Aula 14** — Orquestração, serverless e borda
-- **Aula 15** — Observabilidade e rastreamento distribuído
-- **Aula 16** — Segurança, LGPD e revisão para o ENADE
-
----
-
-## Dúvidas frequentes
-
-**Preciso saber machine learning?** Não. O modelo já está pronto e você só chama uma função.
-
-**E se eu não tiver internet no laboratório?** Tudo neste kit funciona offline. O modelo é
-treinado localmente e o cliente de LLM tem modo simulado.
-
-**Posso trocar a linguagem?** O kit é em Python porque é o ecossistema usado nas aulas.
-Se quiser usar outra linguagem, converse com o professor antes.
-
-**Posso usar IA para me ajudar a programar?** Sim. Este é um trabalho prático feito fora de
-sala, e usar ferramentas de IA é realista. O que se avalia é o **sistema funcionando** e as
-**decisões de arquitetura** — que você precisa saber explicar.
+| Carine | JWT, rate limit, LGPD |
+| Gustavo | Resiliência (timeout, retry, circuit breaker) e armazenamento vetorial |
+| Lucas | Observabilidade (OpenTelemetry/Jaeger), relatório de trade-offs, medição de latência |
+| Juan | Integração (gateway, C1.A2 → inferência/worker, Dockerfiles, compose, README) |
+| Victor | Deploy em nuvem com HTTPS, CI/CD, smoke test |
