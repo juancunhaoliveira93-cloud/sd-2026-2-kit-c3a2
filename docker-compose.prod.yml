@@ -1,0 +1,23 @@
+# Produção (VM na nuvem) = compose base + proxy HTTPS (Caddy, certificado Let's Encrypt automático).
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# Requer no .env:  DOMINIO=<seu-dominio>  JWT_SEGREDO=<segredo forte>  USUARIOS=...  CONFIAR_PROXY=true
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMINIO: ${DOMINIO:?defina DOMINIO no .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_dados:/data
+    depends_on: [gateway]
+    restart: unless-stopped
+
+  gateway:
+    restart: unless-stopped
+    environment:
+      CONFIAR_PROXY: "true"
+      JWT_SEGREDO: ${JWT_SEGREDO:?defina JWT_SEGREDO forte no .env}
+
+volumes:
+  caddy_dados:

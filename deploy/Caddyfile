@@ -1,0 +1,5 @@
+# HTTPS automático: o Caddy obtém e renova o certificado sozinho (portas 80 e 443 abertas).
+{$DOMINIO} {
+	reverse_proxy gateway:8000
+	encode gzip
+}
