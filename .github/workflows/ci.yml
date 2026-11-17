@@ -1,0 +1,52 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - name: Testes do gateway
+        run: cd gateway && python -m pytest -q tests
+      - name: Testes do armazenamento vetorial
+        run: cd vetorial && python -m pytest -q tests
+
+  build-e-smoke:
+    needs: testes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sobe a plataforma inteira (docker compose)
+        run: docker compose up -d --build --wait
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Smoke test ponta a ponta
+        run: python scripts/smoke_test.py
+      - if: failure()
+        run: docker compose logs --tail=80
+      - run: docker compose down -v
+
+  # CD: só roda no push para main E se os segredos de deploy estiverem configurados.
+  deploy:
+    needs: build-e-smoke
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+    steps:
+      - name: Deploy na VM via SSH
+        if: env.DEPLOY_HOST != ''
+        run: |
+          mkdir -p ~/.ssh && echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh -o StrictHostKeyChecking=accept-new ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "cd ~/plataforma && git pull && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build"
