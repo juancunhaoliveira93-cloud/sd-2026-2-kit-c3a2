@@ -3,11 +3,14 @@ Interface gRPC do servico de inferencia.
 
 PRE-REQUISITO: gerar os stubs antes de rodar (veja scripts/gerar_stubs).
 
-O QUE JA ESTA PRONTO: o metodo Prever.
-O QUE VOCE PRECISA FAZER (TAREFAS.md, item 4): o metodo PreverLote.
+Metodos: Prever e PreverLote.
+Cada chamada gera um log (metodo, tamanho, status, tempo) SEM o conteudo do texto,
+e os erros voltam com codigos gRPC explicitos:
+  INVALID_ARGUMENT (texto vazio/grande demais, lote vazio/grande demais) e INTERNAL (falha do modelo).
 
 Rodar:  python -m app.servidor_grpc
 """
+import time
 from concurrent import futures
 
 import grpc
@@ -25,6 +28,24 @@ except ImportError:  # pragma: no cover
     )
 
 
+TEXTO_MAX = 2000
+LOTE_MAX = 100
+
+
+def _registrar(metodo: str, tamanho: int, status: str, inicio: float) -> None:
+    """Log da chamada: nunca inclui o texto (LGPD)."""
+    print(f"[grpc] {metodo} tamanho={tamanho} status={status} "
+          f"({(time.time() - inicio) * 1000:.1f}ms)")
+
+
+def _validar_texto(texto: str):
+    if not texto or not texto.strip():
+        return "texto vazio"
+    if len(texto) > TEXTO_MAX:
+        return f"texto maior que {TEXTO_MAX} caracteres"
+    return None
+
+
 class ServicoInferencia(inferencia_pb2_grpc.InferenciaServicer):
 
     def __init__(self):
@@ -33,24 +54,50 @@ class ServicoInferencia(inferencia_pb2_grpc.InferenciaServicer):
         print("[grpc] modelo pronto")
 
     def Prever(self, request, context):
-        r = self.modelo.prever(request.texto)
+        inicio = time.time()
+        erro = _validar_texto(request.texto)
+        if erro:
+            _registrar("Prever", len(request.texto), "INVALID_ARGUMENT", inicio)
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, erro)
+        try:
+            r = self.modelo.prever(request.texto)
+        except Exception as e:  # noqa: BLE001
+            print(f"[grpc] ERRO no modelo: {type(e).__name__}")
+            _registrar("Prever", len(request.texto), "INTERNAL", inicio)
+            context.abort(grpc.StatusCode.INTERNAL, "falha ao executar o modelo")
+        _registrar("Prever", len(request.texto), "OK", inicio)
         return inferencia_pb2.RespostaPrever(
             texto=r["texto"], sentimento=r["sentimento"], confianca=r["confianca"]
         )
 
-    # TAREFA 4: implemente PreverLote, recebendo varios textos de uma vez.
     def PreverLote(self, request, context):
-        lista_resultados = []
-        
-        # 'textos' vem da message PedidoLote do arquivo .proto
-        for texto in request.textos:
-            r = self.modelo.prever(texto)
-            lista_resultados.append(inferencia_pb2.RespostaPrever(
-                texto=r["texto"], sentimento=r["sentimento"], confianca=r["confianca"]
-            ))
-            
-        # 'resultados' vem da message RespostaLote do arquivo .proto
-        return inferencia_pb2.RespostaLote(resultados=lista_resultados)
+        inicio = time.time()
+        textos = list(request.textos)
+        if not textos:
+            _registrar("PreverLote", 0, "INVALID_ARGUMENT", inicio)
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "lote vazio")
+        if len(textos) > LOTE_MAX:
+            _registrar("PreverLote", len(textos), "INVALID_ARGUMENT", inicio)
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT,
+                          f"lote maior que {LOTE_MAX} textos")
+        for texto in textos:
+            erro = _validar_texto(texto)
+            if erro:
+                _registrar("PreverLote", len(textos), "INVALID_ARGUMENT", inicio)
+                context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"item invalido no lote: {erro}")
+
+        resultados = []
+        try:
+            for texto in textos:
+                r = self.modelo.prever(texto)
+                resultados.append(inferencia_pb2.RespostaPrever(
+                    texto=r["texto"], sentimento=r["sentimento"], confianca=r["confianca"]))
+        except Exception as e:  # noqa: BLE001
+            print(f"[grpc] ERRO no modelo: {type(e).__name__}")
+            _registrar("PreverLote", len(textos), "INTERNAL", inicio)
+            context.abort(grpc.StatusCode.INTERNAL, "falha ao executar o modelo")
+        _registrar("PreverLote", len(textos), "OK", inicio)
+        return inferencia_pb2.RespostaLote(resultados=resultados)
 
 
 def servir(porta: int = 50051):

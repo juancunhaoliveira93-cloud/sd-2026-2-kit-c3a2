@@ -11,7 +11,9 @@ Rodar local: uvicorn app.api_rest:app --port 8001
 """
 import time
 
+import redis
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app import fila, telemetria
@@ -46,6 +48,28 @@ async def registrar(request: Request, call_next):
     return resposta
 
 
+@app.exception_handler(Exception)
+async def erro_inesperado(request: Request, exc: Exception):
+    """Último recurso: erro não previsto vira 500 com mensagem clara (sem vazar detalhes)."""
+    print(f"[inferencia] ERRO {request.method} {request.url.path}: {type(exc).__name__}")
+    return JSONResponse(status_code=500, content={"detail": "erro interno no servico de inferencia"})
+
+
+def _exigir_modelo():
+    if modelo is None:
+        raise HTTPException(status_code=503, detail="modelo ainda nao carregado")
+
+
+def _prever(texto: str) -> dict:
+    """Executa o modelo; falha do modelo vira 500 explícito."""
+    _exigir_modelo()
+    try:
+        return modelo.prever(texto)
+    except Exception as erro:  # noqa: BLE001
+        print(f"[inferencia] ERRO no modelo: {type(erro).__name__}")
+        raise HTTPException(status_code=500, detail="falha ao executar o modelo")
+
+
 @app.get("/saude")
 def saude():
     return {"status": "ok", "modelo_carregado": modelo is not None, "redis": fila.ping()}
@@ -56,7 +80,7 @@ def predict_sync(entrada: Entrada):
     if not entrada.texto.strip():
         raise HTTPException(status_code=400, detail="texto vazio")
     inicio = time.time()
-    resultado = modelo.prever(entrada.texto)
+    resultado = _prever(entrada.texto)
     resultado["tempo_ms"] = round((time.time() - inicio) * 1000, 2)
     return resultado
 
@@ -65,12 +89,20 @@ def predict_sync(entrada: Entrada):
 def predict(entrada: Entrada):
     if not entrada.texto.strip():
         raise HTTPException(status_code=400, detail="texto vazio")
-    return {"id": fila.enfileirar(entrada.texto), "status": "processando"}
+    try:
+        return {"id": fila.enfileirar(entrada.texto), "status": "processando"}
+    except redis.RedisError as erro:
+        print(f"[inferencia] ERRO na fila: {type(erro).__name__}")
+        raise HTTPException(status_code=503, detail="fila indisponivel, tente novamente")
 
 
 @app.get("/resultado/{tarefa_id}")
 def resultado(tarefa_id: str):
-    encontrado = fila.buscar_resultado(tarefa_id)
+    try:
+        encontrado = fila.buscar_resultado(tarefa_id)
+    except redis.RedisError as erro:
+        print(f"[inferencia] ERRO na fila: {type(erro).__name__}")
+        raise HTTPException(status_code=503, detail="fila indisponivel, tente novamente")
     if encontrado is None:
         raise HTTPException(status_code=404, detail="resultado nao encontrado ou expirado")
     return encontrado
