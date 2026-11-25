@@ -16,7 +16,7 @@ Este e o projeto integrador. Reaproveite o que voce fez em C1.A2 e C2.A2.
 - [x] **4. docker-compose completo**
       O sistema inteiro deve subir com UM comando. (Aula 14)
 
-- [ ] **5. Deploy em nuvem (free tier)**
+- [X] **5. Deploy em nuvem (free tier)**
       Publicar e informar a URL publica no README. (Aula 13)
 
 - [x] **6. Resiliencia**
@@ -25,7 +25,7 @@ Este e o projeto integrador. Reaproveite o que voce fez em C1.A2 e C2.A2.
 - [x] **7. Observabilidade**
       Rastreamento distribuido cobrindo gateway -> fila -> worker. (Aula 15)
 
-- [ ] **8. HTTPS** no servico publicado. (Aula 16)
+- [X] **8. HTTPS** no servico publicado. (Aula 16)
 
 - [x] **9. Secao de conformidade no README**
       Quais dados sao tratados, com qual finalidade e por quanto tempo. (LGPD, Aula 16)
