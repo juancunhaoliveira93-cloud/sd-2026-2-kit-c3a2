@@ -6,7 +6,8 @@
 Plataforma cloud-native de inferência de IA (análise de sentimento): microsserviços **conteinerizados**,
 **publicados** na nuvem com HTTPS, **observáveis** (rastreamento distribuído) e **protegidos** (JWT, rate limit, LGPD).
 
-> **URL pública:** `https://<PREENCHER-APOS-O-DEPLOY>` — veja [deploy/INSTRUCOES.md](deploy/INSTRUCOES.md)
+> **URL pública (Render, HTTPS):** https://sd-2026-2-kit-c3a2-w7zb.onrender.com — documentação interativa em [/docs](https://sd-2026-2-kit-c3a2-w7zb.onrender.com/docs).
+> O plano gratuito dorme após 15 min sem uso: a primeira chamada pode levar ~50 s. As credenciais de avaliação são informadas na entrega (não ficam no repositório).
 
 ## Arquitetura
 
@@ -80,6 +81,15 @@ gRPC do C1.A2 (opcional): `docker compose --profile grpc up --build`
 
 Sem token → `401`. Excesso de requisições → `429` + `Retry-After`. Serviço interno fora do ar → `503`.
 
+## Deploy (nuvem + HTTPS)
+
+Publicado no **Render** (free tier) com HTTPS automático. Como o plano gratuito só aceita *web service* (sem worker em
+segundo plano nem rede privada entre serviços), o deploy usa **uma imagem única** (`Dockerfile.render`) com os mesmos
+componentes rodando juntos: só o **gateway** é público; inferência, vetorial e Redis escutam apenas em `127.0.0.1`.
+A arquitetura em microsserviços independentes é a do `docker-compose.yml` (local ou VM, ver `docker-compose.prod.yml`).
+O serviço recusa subir com a senha e o segredo JWT padrão; ambos vêm de variáveis de ambiente.
+Detalhes, configuração e solução de problemas: [deploy/RENDER.md](deploy/RENDER.md).
+
 ## Resiliência
 - **Tempo-limite:** 1,5 s (conexão) e 5 s (leitura) em toda chamada interna.
 - **Retentativa:** até 3 tentativas com espera progressiva (0,3 s, 0,6 s) + jitter.
@@ -115,10 +125,10 @@ gateway/      app.py auth.py ratelimit.py resiliencia.py telemetria.py Dockerfil
 inferencia/   app/ (api_rest, fila, modelo, servidor_grpc, telemetria) proto/ Dockerfile
 worker/       app/ (worker, fila, modelo, telemetria) Dockerfile
 vetorial/     main.py telemetria.py Dockerfile tests/
-deploy/       INSTRUCOES.md Caddyfile
+deploy/       RENDER.md INSTRUCOES.md Caddyfile render/ (start.sh, requirements.txt)
 docs/         LGPD.md OBSERVABILIDADE.md TRADEOFFS.md
 scripts/      smoke_test.py medir_latencia.py
-docker-compose.yml  docker-compose.prod.yml  .github/workflows/ci.yml
+docker-compose.yml  docker-compose.prod.yml  Dockerfile.render  .github/workflows/ci.yml
 ```
 
 ## Origem do código

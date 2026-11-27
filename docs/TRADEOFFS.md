@@ -36,15 +36,18 @@ Timeouts curtos (1,5 s conexão / 5 s leitura) e retentativas com backoff limita
 
 | Decisão | Economiza | Custo/limite |
 |---|---|---|
-| Uma VM free tier rodando todo o compose | Dinheiro (R$ 0) | Sem alta disponibilidade; recursos pequenos |
+| Tudo em um único container no Render free (`Dockerfile.render`) | Dinheiro (R$ 0) e o worker não dorme sozinho | Os 5 processos dividem 512 MB e uma CPU e falham juntos; sem alta disponibilidade; serviço dorme após 15 min |
 | Redis único, sem persistência | Simplicidade | Fila em memória: reiniciar o Redis perde tarefas pendentes |
 | Modelo leve (scikit-learn) no worker | CPU/GPU | Sem LLM; sofisticação do modelo não pontua |
 | Embedding por hash (sem modelo externo) | Chamadas de API pagas | Similaridade lexical, não semântica |
 | Jaeger em memória | Armazenamento | Traces somem ao reiniciar |
 | Rate limit em memória do gateway | Não precisa de Redis compartilhado | Com N réplicas o limite efetivo é N× |
 
-Free tier: plataformas como o Render só oferecem instância gratuita para *web service* (worker em segundo plano é pago),
-por isso o deploy usa uma VM com `docker compose` — ver `deploy/INSTRUCOES.md`.
+Free tier: o Render só oferece instância gratuita para *web service* (worker em segundo plano é pago, não há rede
+privada entre serviços e o serviço dorme após 15 min). Por isso o deploy público roda a plataforma inteira em **um container**
+(`Dockerfile.render`): só o gateway é público e os demais componentes escutam em `127.0.0.1`. Troca consciente: perdemos o
+isolamento e a escala independente de cada serviço na nuvem, mas ganhamos um worker que funciona no plano gratuito.
+Os microsserviços independentes continuam no `docker-compose.yml` e na opção de VM (`deploy/INSTRUCOES.md`).
 
 ## 4. Como escalaria
 `docker compose up --scale worker=N` já divide a carga (BLPOP entrega cada tarefa a um só worker). Próximos passos:
