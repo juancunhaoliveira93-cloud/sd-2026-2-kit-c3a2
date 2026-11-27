@@ -24,8 +24,19 @@ Medição local de referência (`python scripts/medir_latencia.py`, 30 amostras,
 | `/predict` (até o 202) | 6,8 | 10,5 | 11,0 |
 | Fim a fim assíncrono | 13,6 | 19,4 | 74,1 |
 
-> ⚠️ Refazer a medição contra a **URL pública** e substituir/complementar esta tabela. Esperado: a rede
-> e o *cold start* do free tier dominam (centenas de ms ou segundos), muito acima do tempo do modelo.
+Medição na **URL pública** (Render free tier, `scripts/medir_latencia.py`, 5 amostras, feita a partir do Brasil com o serviço já acordado):
+
+| Operação | p50 (ms) | p95 (ms) | máx (ms) |
+|---|---|---|---|
+| `/predict-sync` | 511,6 | 737,1 | 737,1 |
+| `/predict` (até o 202) | 328,0 | 405,5 | 405,5 |
+| Fim a fim assíncrono | 814,1 | 1026,9 | 1026,9 |
+
+> Com só 5 amostras, p95 e máximo coincidem: os números mostram a ordem de grandeza, não uma estatística robusta.
+> Comparada à medição local, a latência pública é cerca de duas ordens de grandeza maior. O modelo continua levando poucos
+> milissegundos; o que domina é a rede (cada requisição HTTPS ao servidor do Render custa centenas de ms) e, após inatividade,
+> o *cold start* do plano gratuito (o serviço dorme após 15 min e a primeira chamada pode levar ~50 s). O fim a fim assíncrono
+> (~0,8 s) soma o envio da tarefa e as consultas ao `/resultado` até ficar pronta.
 
 Trade-offs: o caminho assíncrono é mais lento fim a fim (+ fila + worker) mas **responde rápido ao cliente**
 e absorve picos; o síncrono é mais simples e rápido para cargas leves, porém trava o cliente se o modelo demorar.
