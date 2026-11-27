@@ -1,0 +1,31 @@
+# Imagem ÚNICA com a plataforma inteira, para o deploy no Render (free tier).
+# Por quê: o plano gratuito só aceita "web service", não tem worker em segundo plano e
+# não tem rede privada entre serviços. Aqui os 5 processos rodam juntos e conversam por
+# 127.0.0.1; só o gateway é público. A arquitetura em microsserviços continua valendo no
+# docker-compose.yml (local/VM). Ver deploy/RENDER.md.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 MALLOC_ARENA_MAX=2
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends redis-server \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /srv
+
+COPY deploy/render/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+COPY gateway    ./gateway
+COPY inferencia ./inferencia
+COPY worker     ./worker
+COPY vetorial   ./vetorial
+COPY deploy/render/start.sh /srv/start.sh
+
+# Treina/salva o modelo na construção da imagem (a subida fica rápida)
+RUN cd /srv/inferencia && python -m app.modelo \
+ && cd /srv/worker && python -m app.modelo \
+ && chmod +x /srv/start.sh
+
+EXPOSE 10000
+CMD ["/srv/start.sh"]
